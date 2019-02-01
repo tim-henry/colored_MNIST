@@ -1,6 +1,7 @@
 from __future__ import print_function
 import argparse
 import colored_dataset
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -45,7 +46,7 @@ def train(args, model, device, train_loader, optimizer, epoch):
                        100. * batch_idx / len(train_loader), loss.item()))
 
 
-def test(args, model, device, test_loader):
+def test(args, model, device, test_loader, left_out):
     model.eval()
     test_loss = 0
     num_correct_count = 0
@@ -77,9 +78,10 @@ def test(args, model, device, test_loader):
             correct_count += correct.sum().item()
 
             # Calculate left-out accuracy
-            left_out = colored_dataset.LeftOutColoredMNIST.left_out
-            mask = torch.Tensor(((num_target.numpy() == left_out[0]) * (col_target.numpy() == left_out[1]))
-                                .astype("uint8")).byte()
+            mask = np.zeros(num_target.size())
+            for pair in left_out:
+                mask = np.logical_or(mask, (target.numpy() - np.array(pair)).sum(axis=1) == 0)
+            mask = torch.Tensor(mask.astype("uint8")).byte()
 
             left_out_num_correct = num_correct * mask
             left_out_col_correct = col_correct * mask
@@ -113,7 +115,7 @@ def main():
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=10, metavar='N',
+    parser.add_argument('--epochs', type=int, default=5, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                         help='learning rate (default: 0.01)')
@@ -138,7 +140,7 @@ def main():
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
     train_loader = torch.utils.data.DataLoader(
-        colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True),
+        colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=0.6),
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     test_loader = torch.utils.data.DataLoader(
@@ -150,7 +152,7 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         train(args, model, device, train_loader, optimizer, epoch)
-        test(args, model, device, test_loader)
+        test(args, model, device, test_loader, train_loader.dataset.left_out)
 
     if (args.save_model):
         torch.save(model.state_dict(), "mnist_cnn.pt")
