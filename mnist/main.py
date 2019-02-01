@@ -51,6 +51,12 @@ def test(args, model, device, test_loader):
     num_correct_count = 0
     col_correct_count = 0
     correct_count = 0
+
+    left_out_num_correct_count = 0
+    left_out_col_correct_count = 0
+    left_out_correct_count = 0
+    left_out_count = 0
+
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
@@ -60,6 +66,7 @@ def test(args, model, device, test_loader):
             test_loss += F.nll_loss(num_output, num_target, reduction='sum').item()  # sum up batch loss
             test_loss += F.nll_loss(col_output, col_target, reduction='sum').item()
 
+            # Calculate accuracy
             # get the index of the max log-probability
             pred = torch.cat((num_output.argmax(dim=1, keepdim=True), col_output.argmax(dim=1, keepdim=True)), 1)
             num_correct, col_correct = pred.eq(target.view_as(pred))[:, 0], pred.eq(target.view_as(pred))[:, 1]
@@ -69,14 +76,34 @@ def test(args, model, device, test_loader):
             col_correct_count += col_correct.sum().item()
             correct_count += correct.sum().item()
 
+            # Calculate left-out accuracy
+            left_out = colored_dataset.LeftOutColoredMNIST.left_out
+            mask = torch.Tensor(((num_target.numpy() == left_out[0]) * (col_target.numpy() == left_out[1]))
+                                .astype("uint8")).byte()
+
+            left_out_num_correct = num_correct * mask
+            left_out_col_correct = col_correct * mask
+            left_out_correct = left_out_num_correct * left_out_col_correct
+
+            left_out_num_correct_count += left_out_num_correct.sum().item()
+            left_out_col_correct_count += left_out_col_correct.sum().item()
+            left_out_correct_count += left_out_correct.sum().item()
+            left_out_count += mask.sum().item()
+
     test_loss /= len(test_loader.dataset)
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'
-          '(Number Accuracy: {}/{} ({:.0f}%), Color Accuracy: {}/{} ({:.0f}%))\n'.format(
-        test_loss, correct_count, len(test_loader.dataset),
-        100. * correct_count / len(test_loader.dataset), num_correct_count, len(test_loader.dataset),
-        100. * num_correct_count / len(test_loader.dataset), col_correct_count, len(test_loader.dataset),
-        100. * col_correct_count / len(test_loader.dataset)))
+          '(Number Accuracy: {}/{} ({:.0f}%), Color Accuracy: {}/{} ({:.0f}%))\n\n'
+          'Left-Out Accuracy: {}/{} ({:.0f}%)\n'
+          '(Left-Out Number Accuracy: {}/{} ({:.0f}%), Left-Out Color Accuracy: {}/{} ({:.0f}%))\n\n'.format(
+            test_loss,
+            correct_count, len(test_loader.dataset), 100. * correct_count / len(test_loader.dataset),
+            num_correct_count, len(test_loader.dataset), 100. * num_correct_count / len(test_loader.dataset),
+            col_correct_count, len(test_loader.dataset), 100. * col_correct_count / len(test_loader.dataset),
+            left_out_correct_count, left_out_count, 100. * left_out_correct_count / left_out_count,
+            left_out_num_correct_count, left_out_count, 100. * left_out_num_correct_count / left_out_count,
+            left_out_col_correct_count, left_out_count, 100. * left_out_col_correct_count / left_out_count
+            ))
 
 
 def main():
@@ -111,7 +138,7 @@ def main():
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
     train_loader = torch.utils.data.DataLoader(
-        colored_dataset.ColoredMNIST('../data', train=True, download=True),
+        colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True),
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     test_loader = torch.utils.data.DataLoader(
