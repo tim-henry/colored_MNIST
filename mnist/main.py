@@ -2,6 +2,7 @@ from __future__ import print_function
 import argparse
 import colored_dataset
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -97,17 +98,26 @@ def test(args, model, device, test_loader, left_out):
     test_loss /= len(test_loader.dataset)
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'
-          '(Number Accuracy: {}/{} ({:.0f}%), Color Accuracy: {}/{} ({:.0f}%))\n\n'
-          'Left-Out Accuracy: {}/{} ({:.0f}%)\n'
-          '(Left-Out Number Accuracy: {}/{} ({:.0f}%), Left-Out Color Accuracy: {}/{} ({:.0f}%))\n\n'.format(
+          '(Number Accuracy: {}/{} ({:.0f}%), Color Accuracy: {}/{} ({:.0f}%))\n'.format(
             test_loss,
             correct_count, len(test_loader.dataset), 100. * correct_count / len(test_loader.dataset),
             num_correct_count, len(test_loader.dataset), 100. * num_correct_count / len(test_loader.dataset),
-            col_correct_count, len(test_loader.dataset), 100. * col_correct_count / len(test_loader.dataset),
+            col_correct_count, len(test_loader.dataset), 100. * col_correct_count / len(test_loader.dataset)
+    ))
+
+    left_out_acc = None
+    if left_out_count > 0:
+        print('Left-Out Accuracy: {}/{} ({:.0f}%)\n'
+              '(Left-Out Number Accuracy: {}/{} ({:.0f}%), Left-Out Color Accuracy: {}/{} ({:.0f}%))\n'.format(
             left_out_correct_count, left_out_count, 100. * left_out_correct_count / left_out_count,
             left_out_num_correct_count, left_out_count, 100. * left_out_num_correct_count / left_out_count,
             left_out_col_correct_count, left_out_count, 100. * left_out_col_correct_count / left_out_count
-            ))
+        ))
+        left_out_acc = left_out_num_correct_count / left_out_count
+
+    return (num_correct_count / len(test_loader.dataset),
+            left_out_acc,
+            (num_correct_count - left_out_num_correct_count) / (len(test_loader.dataset) - left_out_count))
 
 
 def main():
@@ -119,7 +129,7 @@ def main():
                         help='input batch size for testing (default: 1000)')
     parser.add_argument('--epochs', type=int, default=5, metavar='N',
                         help='number of epochs to train (default: 10)')
-    parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
+    parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
                         help='learning rate (default: 0.01)')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                         help='SGD momentum (default: 0.5)')
@@ -127,7 +137,7 @@ def main():
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
                         help='random seed (default: 1)')
-    parser.add_argument('--log-interval', type=int, default=10, metavar='N',
+    parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                         help='how many batches to wait before logging training status')
 
     parser.add_argument('--save-model', action='store_true', default=False,
@@ -135,29 +145,79 @@ def main():
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
-    torch.manual_seed(args.seed)
+    keep_pcts = [0.2, 0.4, 0.6, 0.8, 1]
+    for keep_pct in keep_pcts:
+        print("Keep pct: ", keep_pct)
+        torch.manual_seed(args.seed)
 
-    device = torch.device("cuda" if use_cuda else "cpu")
+        device = torch.device("cuda" if use_cuda else "cpu")
 
-    kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
+        kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
-    train_loader = torch.utils.data.DataLoader(
-        colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=0.6),
-        batch_size=args.batch_size, shuffle=True, **kwargs)
+        train_loader = torch.utils.data.DataLoader(
+            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=keep_pct),
+            batch_size=args.batch_size, shuffle=True, **kwargs)
 
-    test_loader = torch.utils.data.DataLoader(
-        colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=1),
-        batch_size=args.test_batch_size, shuffle=True, **kwargs)
+        test_loader = torch.utils.data.DataLoader(
+            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=1),
+            batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
-    model = Net().to(device)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+        model = Net().to(device)
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
-    for epoch in range(1, args.epochs + 1):
-        train(args, model, device, train_loader, optimizer, epoch)
-        test(args, model, device, test_loader, train_loader.dataset.left_out)
+        test_accs, left_out_accs, non_left_out_accs = [], [], []
+        for epoch in range(1, args.epochs + 1):
+            train(args, model, device, train_loader, optimizer, epoch)
+            test_acc, left_out_acc, non_left_out_acc = \
+                test(args, model, device, test_loader, train_loader.dataset.left_out)
+            test_accs.append(test_acc)
+            non_left_out_accs.append(non_left_out_acc)
+            if keep_pct != 1:
+                left_out_accs.append(left_out_acc)
 
-    if (args.save_model):
-        torch.save(model.state_dict(), "mnist_cnn.pt")
+        if (args.save_model):
+            torch.save(model.state_dict(), "mnist_cnn.pt")
+
+        print(test_accs, left_out_accs, non_left_out_accs)
+        plt.figure(1)
+        plt.plot([x for x in range(1, len(test_accs) + 1)], test_accs, label="{0}%".format(100 * keep_pct))
+        plt.figure(2)
+        plt.plot([x for x in range(1, len(left_out_accs) + 1)], left_out_accs, label="{0}%".format(100 * keep_pct))
+        plt.figure(3)
+        plt.plot([x for x in range(1, len(non_left_out_accs) + 1)], non_left_out_accs, label="{0}%".format(100 * keep_pct))
+
+    plt.figure(1)
+    plt.legend(keep_pcts, loc='upper left', title="Pct of digit/color combinations used in training")
+    plt.xlim(1, 5)
+    plt.ylim(0, 1)
+    plt.xlabel('Epoch')
+    plt.ylabel('Test Accuracy')
+    plt.title('Overall Test Accuracy')
+    plt.grid(True)
+    plt.xticks([x for x in range(1, 6)])
+    plt.savefig("plots/test_acc.pdf")
+
+    plt.figure(2)
+    plt.legend(keep_pcts[:-1], loc='upper left', title="Pct of digit/color combinations used in training")
+    plt.xlim(1, 5)
+    plt.ylim(0, 1)
+    plt.xlabel('Epoch')
+    plt.ylabel('Test Accuracy')
+    plt.title('Test Accuracy on Left-Out Combinations')
+    plt.grid(True)
+    plt.xticks([x for x in range(1, 6)])
+    plt.savefig("plots/left_out_acc.pdf")
+
+    plt.figure(3)
+    plt.legend(keep_pcts, loc='upper left', title="Pct of digit/color combinations used in training")
+    plt.xlim(1, 5)
+    plt.ylim(0, 1)
+    plt.xlabel('Epoch')
+    plt.ylabel('Test Accuracy')
+    plt.title('Test Accuracy on Non-Left-Out Combinations')
+    plt.grid(True)
+    plt.xticks([x for x in range(1, 6)])
+    plt.savefig("plots/non_left_out_acc.pdf")
 
 
 if __name__ == '__main__':
