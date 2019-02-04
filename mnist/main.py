@@ -80,7 +80,9 @@ def test(args, model, device, test_loader, left_out):
             # Calculate left-out accuracy
             mask = np.zeros(num_target.size())
             for pair in left_out:
-                mask = np.logical_or(mask, (target.numpy() - np.array(pair)).sum(axis=1) == 0)
+                diff_array = np.absolute(target.numpy() - np.array(pair))
+                mask = np.logical_or(mask, diff_array.sum(axis=1) == 0)
+
             mask = torch.Tensor(mask.astype("uint8")).byte()
 
             left_out_num_correct = num_correct * mask
@@ -144,7 +146,7 @@ def main():
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     test_loader = torch.utils.data.DataLoader(
-        colored_dataset.ColoredMNIST('../data', train=False),
+        colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=1),
         batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
     model = Net().to(device)
