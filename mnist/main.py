@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torchvision import transforms
 
 
 class Net(nn.Module):
@@ -99,10 +100,10 @@ def test(args, model, device, test_loader, left_out):
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'
           '(Number Accuracy: {}/{} ({:.0f}%), Color Accuracy: {}/{} ({:.0f}%))\n'.format(
-            test_loss,
-            correct_count, len(test_loader.dataset), 100. * correct_count / len(test_loader.dataset),
-            num_correct_count, len(test_loader.dataset), 100. * num_correct_count / len(test_loader.dataset),
-            col_correct_count, len(test_loader.dataset), 100. * col_correct_count / len(test_loader.dataset)
+        test_loss,
+        correct_count, len(test_loader.dataset), 100. * correct_count / len(test_loader.dataset),
+        num_correct_count, len(test_loader.dataset), 100. * num_correct_count / len(test_loader.dataset),
+        col_correct_count, len(test_loader.dataset), 100. * col_correct_count / len(test_loader.dataset)
     ))
 
     left_out_acc = None
@@ -113,11 +114,11 @@ def test(args, model, device, test_loader, left_out):
             left_out_num_correct_count, left_out_count, 100. * left_out_num_correct_count / left_out_count,
             left_out_col_correct_count, left_out_count, 100. * left_out_col_correct_count / left_out_count
         ))
-        left_out_acc = left_out_num_correct_count / left_out_count
+        left_out_acc = left_out_correct_count / left_out_count
 
-    return (num_correct_count / len(test_loader.dataset),
+    return (correct_count / len(test_loader.dataset),
             left_out_acc,
-            (num_correct_count - left_out_num_correct_count) / (len(test_loader.dataset) - left_out_count))
+            (correct_count - left_out_correct_count) / (len(test_loader.dataset) - left_out_count))
 
 
 def main():
@@ -128,11 +129,13 @@ def main():
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                         help='input batch size for testing (default: 1000)')
     parser.add_argument('--epochs', type=int, default=5, metavar='N',
-                        help='number of epochs to train (default: 10)')
+                        help='number of epochs to train (default: 5)')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
-                        help='learning rate (default: 0.01)')
+                        help='learning rate (default: 0.001)')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                         help='SGD momentum (default: 0.5)')
+    parser.add_argument('--jitter', type=float, default=0, metavar='J',
+                        help='Color jitter (default=0')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -145,7 +148,7 @@ def main():
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
-    keep_pcts = [0.2, 0.4, 0.6, 0.8, 1]
+    keep_pcts = [1, 0.8, 0.6, 0.4, 0.2]
     for keep_pct in keep_pcts:
         print("Keep pct: ", keep_pct)
         torch.manual_seed(args.seed)
@@ -155,11 +158,15 @@ def main():
         kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
         train_loader = torch.utils.data.DataLoader(
-            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=keep_pct),
+            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True,
+                                                transform=transforms.ColorJitter(args.jitter, args.jitter, args.jitter, args.jitter),
+                                                pct_to_keep=keep_pct),
             batch_size=args.batch_size, shuffle=True, **kwargs)
 
         test_loader = torch.utils.data.DataLoader(
-            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=1),
+            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True,
+                                                transform=transforms.ColorJitter(args.jitter, args.jitter, args.jitter, args.jitter),
+                                                pct_to_keep=1),
             batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
         model = Net().to(device)
@@ -184,7 +191,8 @@ def main():
         plt.figure(2)
         plt.plot([x for x in range(1, len(left_out_accs) + 1)], left_out_accs, label="{0}%".format(100 * keep_pct))
         plt.figure(3)
-        plt.plot([x for x in range(1, len(non_left_out_accs) + 1)], non_left_out_accs, label="{0}%".format(100 * keep_pct))
+        plt.plot([x for x in range(1, len(non_left_out_accs) + 1)], non_left_out_accs,
+                 label="{0}%".format(100 * keep_pct))
 
     plt.figure(1)
     plt.legend(keep_pcts, loc='upper left', title="Pct of digit/color combinations used in training")
@@ -194,8 +202,9 @@ def main():
     plt.ylabel('Test Accuracy')
     plt.title('Overall Test Accuracy')
     plt.grid(True)
+    plt.yticks([y / 10 for y in range(0, 11)])
     plt.xticks([x for x in range(1, 6)])
-    plt.savefig("plots/test_acc.pdf")
+    plt.savefig("plots/" + str(args.jitter) + "_noisy_test_acc.pdf")
 
     plt.figure(2)
     plt.legend(keep_pcts[:-1], loc='upper left', title="Pct of digit/color combinations used in training")
@@ -205,8 +214,9 @@ def main():
     plt.ylabel('Test Accuracy')
     plt.title('Test Accuracy on Left-Out Combinations')
     plt.grid(True)
+    plt.yticks([y / 10 for y in range(0, 11)])
     plt.xticks([x for x in range(1, 6)])
-    plt.savefig("plots/left_out_acc.pdf")
+    plt.savefig("plots/" + str(args.jitter) + "_noisy_left_out_acc.pdf")
 
     plt.figure(3)
     plt.legend(keep_pcts, loc='upper left', title="Pct of digit/color combinations used in training")
@@ -216,8 +226,9 @@ def main():
     plt.ylabel('Test Accuracy')
     plt.title('Test Accuracy on Non-Left-Out Combinations')
     plt.grid(True)
+    plt.yticks([y / 10 for y in range(0, 11)])
     plt.xticks([x for x in range(1, 6)])
-    plt.savefig("plots/non_left_out_acc.pdf")
+    plt.savefig("plots/" + str(args.jitter) + "_noisy_non_left_out_acc.pdf")
 
 
 if __name__ == '__main__':
