@@ -1,13 +1,14 @@
 from __future__ import print_function
 import argparse
 import colored_dataset
+from datetime import datetime
+import json
 import numpy as np
-import matplotlib.pyplot as plt
+from os import mkdir
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import transforms
 
 
 class Net(nn.Module):
@@ -33,24 +34,56 @@ class Net(nn.Module):
 
 def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
+    num_loss = 0
+    col_loss = 0
+    num_correct_count = 0
+    col_correct_count = 0
+    correct_count = 0
+
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         num_target, col_target = target[:, 0], target[:, 1]
         optimizer.zero_grad()
 
         num_output, col_output = model(data)
-        loss = F.nll_loss(num_output, num_target) + F.nll_loss(col_output, col_target)
+        batch_num_loss, batch_col_loss = F.nll_loss(num_output, num_target), F.nll_loss(col_output, col_target)
+        num_loss += batch_num_loss.item()
+        col_loss += batch_col_loss.item()
+        loss = batch_num_loss + batch_col_loss
         loss.backward()
         optimizer.step()
+
+        # Calculate accuracy
+        # get the index of the max log-probability
+        pred = torch.cat((num_output.argmax(dim=1, keepdim=True), col_output.argmax(dim=1, keepdim=True)), 1)
+        num_correct, col_correct = pred.eq(target.view_as(pred))[:, 0], pred.eq(target.view_as(pred))[:, 1]
+        correct = num_correct * col_correct  # both must be correct
+
+        num_correct_count += num_correct.sum().item()
+        col_correct_count += col_correct.sum().item()
+        correct_count += correct.sum().item()
+
         if batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader), loss.item()))
 
+    total_loss = num_loss + col_loss
+
+    return {
+        "num_acc": num_correct_count / len(train_loader.dataset),
+        "col_acc": col_correct_count / len(train_loader.dataset),
+        "acc": correct_count / len(train_loader.dataset),
+        "num_loss": num_loss,
+        "col_loss": col_loss,
+        "loss": total_loss
+    }
+
 
 def test(args, model, device, test_loader, left_out):
     model.eval()
-    test_loss = 0
+    num_loss = 0
+    col_loss = 0
     num_correct_count = 0
     col_correct_count = 0
     correct_count = 0
@@ -66,8 +99,8 @@ def test(args, model, device, test_loader, left_out):
             num_target, col_target = target[:, 0], target[:, 1]
 
             num_output, col_output = model(data)
-            test_loss += F.nll_loss(num_output, num_target, reduction='sum').item()  # sum up batch loss
-            test_loss += F.nll_loss(col_output, col_target, reduction='sum').item()
+            num_loss += F.nll_loss(num_output, num_target, reduction='sum').item()
+            col_loss += F.nll_loss(col_output, col_target, reduction='sum').item()
 
             # Calculate accuracy
             # get the index of the max log-probability
@@ -96,11 +129,11 @@ def test(args, model, device, test_loader, left_out):
             left_out_correct_count += left_out_correct.sum().item()
             left_out_count += mask.sum().item()
 
-    test_loss /= len(test_loader.dataset)
+    total_loss = num_loss + col_loss
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'
           '(Number Accuracy: {}/{} ({:.0f}%), Color Accuracy: {}/{} ({:.0f}%))\n'.format(
-        test_loss,
+        total_loss,
         correct_count, len(test_loader.dataset), 100. * correct_count / len(test_loader.dataset),
         num_correct_count, len(test_loader.dataset), 100. * num_correct_count / len(test_loader.dataset),
         col_correct_count, len(test_loader.dataset), 100. * col_correct_count / len(test_loader.dataset)
@@ -116,12 +149,29 @@ def test(args, model, device, test_loader, left_out):
         ))
         left_out_acc = left_out_correct_count / left_out_count
 
-    return (correct_count / len(test_loader.dataset),
-            left_out_acc,
-            (correct_count - left_out_correct_count) / (len(test_loader.dataset) - left_out_count))
+    return {
+        "num_acc": num_correct_count / len(test_loader.dataset),
+        "col_acc": col_correct_count / len(test_loader.dataset),
+        "acc": correct_count / len(test_loader.dataset),
+        "left_out_num_acc": left_out_num_correct_count / left_out_count if left_out_count != 0 else None,
+        "left_out_col_acc": left_out_col_correct_count / left_out_count if left_out_count != 0 else None,
+        "left_out_acc": left_out_acc if left_out_count != 0 else None,
+        "non_left_out_num_acc": (num_correct_count - left_out_num_correct_count) / (
+                    len(test_loader.dataset) - left_out_count),
+        "non_left_out_col_acc": (col_correct_count - left_out_col_correct_count) / (
+                    len(test_loader.dataset) - left_out_count),
+        "non_left_out_acc": (correct_count - left_out_correct_count) / (
+                    len(test_loader.dataset) - left_out_count),
+        "num_loss": num_loss,
+        "col_loss": col_loss,
+        "loss": total_loss
+    }
 
 
 def main():
+    timestamp = datetime.utcnow().strftime('%Y-%m-%d_%H:%M:%S_%f')
+    mkdir("results/" + timestamp)
+
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
@@ -134,20 +184,18 @@ def main():
                         help='learning rate (default: 0.001)')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                         help='SGD momentum (default: 0.5)')
-    parser.add_argument('--jitter', type=float, default=0, metavar='J',
-                        help='Color jitter (default=0')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
                         help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                         help='how many batches to wait before logging training status')
-
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
+    train_results, test_results = {}, {}
     keep_pcts = [1, 0.8, 0.6, 0.4, 0.2]
     for keep_pct in keep_pcts:
         print("Keep pct: ", keep_pct)
@@ -158,77 +206,31 @@ def main():
         kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
         train_loader = torch.utils.data.DataLoader(
-            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True,
-                                                transform=transforms.ColorJitter(args.jitter, args.jitter, args.jitter, args.jitter),
-                                                pct_to_keep=keep_pct),
+            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=keep_pct),
             batch_size=args.batch_size, shuffle=True, **kwargs)
 
         test_loader = torch.utils.data.DataLoader(
-            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True,
-                                                transform=transforms.ColorJitter(args.jitter, args.jitter, args.jitter, args.jitter),
-                                                pct_to_keep=1),
+            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=1),
             batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
         model = Net().to(device)
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
-        test_accs, left_out_accs, non_left_out_accs = [], [], []
+        keep_pct_train_results, keep_pct_test_results = [], []
         for epoch in range(1, args.epochs + 1):
-            train(args, model, device, train_loader, optimizer, epoch)
-            test_acc, left_out_acc, non_left_out_acc = \
-                test(args, model, device, test_loader, train_loader.dataset.left_out)
-            test_accs.append(test_acc)
-            non_left_out_accs.append(non_left_out_acc)
-            if keep_pct != 1:
-                left_out_accs.append(left_out_acc)
+            keep_pct_train_results.append(train(args, model, device, train_loader, optimizer, epoch))
+            keep_pct_test_results.append(test(args, model, device, test_loader, train_loader.dataset.left_out))
+        train_results[keep_pct] = keep_pct_train_results
+        test_results[keep_pct] = keep_pct_test_results
 
         if (args.save_model):
             torch.save(model.state_dict(), "mnist_cnn.pt")
 
-        print(test_accs, left_out_accs, non_left_out_accs)
-        plt.figure(1)
-        plt.plot([x for x in range(1, len(test_accs) + 1)], test_accs, label="{0}%".format(100 * keep_pct))
-        plt.figure(2)
-        plt.plot([x for x in range(1, len(left_out_accs) + 1)], left_out_accs, label="{0}%".format(100 * keep_pct))
-        plt.figure(3)
-        plt.plot([x for x in range(1, len(non_left_out_accs) + 1)], non_left_out_accs,
-                 label="{0}%".format(100 * keep_pct))
+    with open("results/" + timestamp + '/train.json', 'w') as fp:
+        json.dump(train_results, fp)
 
-    plt.figure(1)
-    plt.legend(keep_pcts, loc='upper left', title="Pct of digit/color combinations used in training")
-    plt.xlim(1, 5)
-    plt.ylim(0, 1)
-    plt.xlabel('Epoch')
-    plt.ylabel('Test Accuracy')
-    plt.title('Overall Test Accuracy')
-    plt.grid(True)
-    plt.yticks([y / 10 for y in range(0, 11)])
-    plt.xticks([x for x in range(1, 6)])
-    plt.savefig("plots/" + str(args.jitter) + "_noisy_test_acc.pdf")
-
-    plt.figure(2)
-    plt.legend(keep_pcts[:-1], loc='upper left', title="Pct of digit/color combinations used in training")
-    plt.xlim(1, 5)
-    plt.ylim(0, 1)
-    plt.xlabel('Epoch')
-    plt.ylabel('Test Accuracy')
-    plt.title('Test Accuracy on Left-Out Combinations')
-    plt.grid(True)
-    plt.yticks([y / 10 for y in range(0, 11)])
-    plt.xticks([x for x in range(1, 6)])
-    plt.savefig("plots/" + str(args.jitter) + "_noisy_left_out_acc.pdf")
-
-    plt.figure(3)
-    plt.legend(keep_pcts, loc='upper left', title="Pct of digit/color combinations used in training")
-    plt.xlim(1, 5)
-    plt.ylim(0, 1)
-    plt.xlabel('Epoch')
-    plt.ylabel('Test Accuracy')
-    plt.title('Test Accuracy on Non-Left-Out Combinations')
-    plt.grid(True)
-    plt.yticks([y / 10 for y in range(0, 11)])
-    plt.xticks([x for x in range(1, 6)])
-    plt.savefig("plots/" + str(args.jitter) + "_noisy_non_left_out_acc.pdf")
+    with open("results/" + timestamp + '/test.json', 'w') as fp:
+        json.dump(test_results, fp)
 
 
 if __name__ == '__main__':

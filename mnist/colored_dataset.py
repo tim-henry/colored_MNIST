@@ -6,11 +6,16 @@ from torchvision import datasets, transforms
 
 
 class LeftOutColoredMNIST(datasets.MNIST):
+    # Color classes
     color_name_map = ["red", "green", "blue", "yellow", "magenta", "cyan", "purple", "lime", "orange", "white"]
-    color_map = [np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1]),
-                 np.array([1, 1, 0]), np.array([1, 0, 1]), np.array([0, 1, 1]),
+    color_map = [np.array([1, 0.1, 0.1]), np.array([0.1, 1, 0.1]), np.array([0.1, 0.1, 1]),
+                 np.array([1, 1, 0.1]), np.array([1, 0.1, 1]), np.array([0.1, 1, 1]),
                  np.array([0.57, 0.12, 0.71]), np.array([0.72, 0.96, 0.24]), np.array([0.96, 0.51, 0.19]),
                  np.array([1, 1, 1])]
+
+    # Gaussian noise arguments
+    mu = 0
+    sigma = 20
 
     # pct_to_keep: percentage of possible combinations to keep between 0 and 1, rounded down to nearest multiple of 0.2
     def __init__(self, root, train=True, transform=None, target_transform=None, download=False, pct_to_keep=1):
@@ -54,6 +59,12 @@ class LeftOutColoredMNIST(datasets.MNIST):
         color_class = random.randrange(lower_bound, upper_bound) % 10
 
         img_array = img_array * self.color_map[color_class]
+
+        # Add Gaussian noise
+        noise = np.reshape(np.random.normal(self.mu, self.sigma, img_array.size), img_array.shape)
+        mask = (img_array != 0).astype("uint8")
+        img_array = img_array + np.multiply(mask, noise)
+        img_array = np.clip(img_array, 0, 255)
         img_array = img_array.astype("uint8")
 
         img = Image.fromarray(img_array)
