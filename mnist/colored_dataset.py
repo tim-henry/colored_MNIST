@@ -15,25 +15,17 @@ class LeftOutColoredMNIST(datasets.MNIST):
 
     # Gaussian noise arguments
     mu = 0
-    sigma = 20
+    sigma = 200
 
     # pct_to_keep: percentage of possible combinations to keep between 0 and 1, rounded down to nearest multiple of 0.2
-    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, pct_to_keep=1):
+    def __init__(self, root, train=True, transform=None, target_transform=None, download=False, pct_to_keep=1, color_indices=np.arange(10)):
         super().__init__(root, train, transform, target_transform, download)
-
-        self.max_dist = int((pct_to_keep * 10) / 2)
-
-        self.left_out = []
-        for i in range(10):
-            leave_out = {k for k in range(10)}
-
-            lower_bound = i - self.max_dist
-            upper_bound = i + self.max_dist
-            for j in range(lower_bound, upper_bound):
-                leave_out.remove(j % 10)
-
-            for j in leave_out:
-                self.left_out.append((i, j))
+        pct = pct_to_keep * 10
+        self.max_left_dist = int(pct / 2)
+        self.max_right_dist = int(pct / 2) if pct % 2 == 0 else int(pct / 2) + 1
+        self.held_out = [(0, 5), (1, 6), (2, 7), (3, 8), (4, 9), (5, 0), (6, 1), (7, 2), (8, 3), (9, 4)]
+        self.control = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9)]
+        self.color_indices = color_indices
 
     def __getitem__(self, index):
         """
@@ -53,12 +45,12 @@ class LeftOutColoredMNIST(datasets.MNIST):
 
         # Color image
         number_class = target.item()
-        lower_bound = number_class - self.max_dist
-        upper_bound = number_class + self.max_dist
+        lower_bound = number_class - self.max_left_dist
+        upper_bound = number_class + self.max_right_dist
 
         color_class = random.randrange(lower_bound, upper_bound) % 10
 
-        img_array = img_array * self.color_map[color_class]
+        img_array = img_array * self.color_map[self.color_indices[color_class]]
 
         # Add Gaussian noise
         noise = np.reshape(np.random.normal(self.mu, self.sigma, img_array.size), img_array.shape)

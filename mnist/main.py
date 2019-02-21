@@ -80,7 +80,8 @@ def train(args, model, device, train_loader, optimizer, epoch):
     }
 
 
-def test(args, model, device, test_loader, left_out):
+def test(args, model, device, test_loader, held_out, control):
+
     model.eval()
     num_loss = 0
     col_loss = 0
@@ -92,6 +93,11 @@ def test(args, model, device, test_loader, left_out):
     left_out_col_correct_count = 0
     left_out_correct_count = 0
     left_out_count = 0
+    
+    non_left_out_num_correct_count = 0
+    non_left_out_col_correct_count = 0
+    non_left_out_correct_count = 0
+    non_left_out_count = 0
 
     with torch.no_grad():
         for data, target in test_loader:
@@ -114,11 +120,11 @@ def test(args, model, device, test_loader, left_out):
 
             # Calculate left-out accuracy
             mask = np.zeros(num_target.size())
-            for pair in left_out:
-                diff_array = np.absolute(target.numpy() - np.array(pair))
+            for pair in held_out:
+                diff_array = np.absolute(target.cpu().numpy() - np.array(pair))
                 mask = np.logical_or(mask, diff_array.sum(axis=1) == 0)
 
-            mask = torch.Tensor(mask.astype("uint8")).byte()
+            mask = torch.Tensor(mask.astype("uint8")).byte().to(device)
 
             left_out_num_correct = num_correct * mask
             left_out_col_correct = col_correct * mask
@@ -128,6 +134,23 @@ def test(args, model, device, test_loader, left_out):
             left_out_col_correct_count += left_out_col_correct.sum().item()
             left_out_correct_count += left_out_correct.sum().item()
             left_out_count += mask.sum().item()
+            
+            # Calculate non_left-out accuracy
+            mask = np.zeros(num_target.size())
+            for pair in control:
+                diff_array = np.absolute(target.cpu().numpy() - np.array(pair))
+                mask = np.logical_or(mask, diff_array.sum(axis=1) == 0)
+
+            mask = torch.Tensor(mask.astype("uint8")).byte().to(device)
+
+            non_left_out_num_correct = num_correct * mask
+            non_left_out_col_correct = col_correct * mask
+            non_left_out_correct = non_left_out_num_correct * non_left_out_col_correct
+
+            non_left_out_num_correct_count += non_left_out_num_correct.sum().item()
+            non_left_out_col_correct_count += non_left_out_col_correct.sum().item()
+            non_left_out_correct_count += non_left_out_correct.sum().item()
+            non_left_out_count += mask.sum().item()
 
     total_loss = num_loss + col_loss
 
@@ -149,6 +172,16 @@ def test(args, model, device, test_loader, left_out):
         ))
         left_out_acc = left_out_correct_count / left_out_count
 
+    non_left_out_acc = None
+    if non_left_out_count > 0:
+        print('non_left-Out Accuracy: {}/{} ({:.0f}%)\n'
+              '(non_left-Out Number Accuracy: {}/{} ({:.0f}%), non_left-Out Color Accuracy: {}/{} ({:.0f}%))\n'.format(
+            non_left_out_correct_count, non_left_out_count, 100. * non_left_out_correct_count / non_left_out_count,
+            non_left_out_num_correct_count, non_left_out_count, 100. * non_left_out_num_correct_count / non_left_out_count,
+            non_left_out_col_correct_count, non_left_out_count, 100. * non_left_out_col_correct_count / non_left_out_count
+        ))
+        non_left_out_acc = non_left_out_correct_count / non_left_out_count
+
     return {
         "num_acc": num_correct_count / len(test_loader.dataset),
         "col_acc": col_correct_count / len(test_loader.dataset),
@@ -156,12 +189,9 @@ def test(args, model, device, test_loader, left_out):
         "left_out_num_acc": left_out_num_correct_count / left_out_count if left_out_count != 0 else None,
         "left_out_col_acc": left_out_col_correct_count / left_out_count if left_out_count != 0 else None,
         "left_out_acc": left_out_acc if left_out_count != 0 else None,
-        "non_left_out_num_acc": (num_correct_count - left_out_num_correct_count) / (
-                    len(test_loader.dataset) - left_out_count),
-        "non_left_out_col_acc": (col_correct_count - left_out_col_correct_count) / (
-                    len(test_loader.dataset) - left_out_count),
-        "non_left_out_acc": (correct_count - left_out_correct_count) / (
-                    len(test_loader.dataset) - left_out_count),
+        "non_left_out_num_acc": non_left_out_num_correct_count / non_left_out_count if non_left_out_count != 0 else None,
+        "non_left_out_col_acc": non_left_out_col_correct_count / non_left_out_count if non_left_out_count != 0 else None,
+        "non_left_out_acc": non_left_out_acc if non_left_out_count != 0 else None,
         "num_loss": num_loss,
         "col_loss": col_loss,
         "loss": total_loss
@@ -194,9 +224,10 @@ def main():
                         help='For Saving the current Model')
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
+    print("use_cuda? ", use_cuda)
 
     train_results, test_results = {}, {}
-    keep_pcts = [1, 0.8, 0.6, 0.4, 0.2]
+    keep_pcts = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
     for keep_pct in keep_pcts:
         print("Keep pct: ", keep_pct)
         torch.manual_seed(args.seed)
@@ -205,12 +236,15 @@ def main():
 
         kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
+        random_indices = np.arange(10)
+        np.random.shuffle(random_indices)
+
         train_loader = torch.utils.data.DataLoader(
-            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=keep_pct),
+            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=keep_pct, color_indices=random_indices),
             batch_size=args.batch_size, shuffle=True, **kwargs)
 
         test_loader = torch.utils.data.DataLoader(
-            colored_dataset.LeftOutColoredMNIST('../data', train=True, download=True, pct_to_keep=1),
+            colored_dataset.LeftOutColoredMNIST('../data', train=False, download=True, pct_to_keep=1, color_indices=random_indices),
             batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
         model = Net().to(device)
@@ -219,7 +253,7 @@ def main():
         keep_pct_train_results, keep_pct_test_results = [], []
         for epoch in range(1, args.epochs + 1):
             keep_pct_train_results.append(train(args, model, device, train_loader, optimizer, epoch))
-            keep_pct_test_results.append(test(args, model, device, test_loader, train_loader.dataset.left_out))
+            keep_pct_test_results.append(test(args, model, device, test_loader, train_loader.dataset.held_out, train_loader.dataset.control))
         train_results[keep_pct] = keep_pct_train_results
         test_results[keep_pct] = keep_pct_test_results
 
